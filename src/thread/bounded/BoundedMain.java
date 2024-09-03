@@ -14,7 +14,7 @@ public class BoundedMain {
         - 만약 생산자가 2개를 넘어서는 데이터를 추가로 저장하려고 하면 문제가 발생한다.
         - 반대로 버퍼에 데이터가 없는데, 소비자가 데이터를 가져갈 때도 문제가 발생한다.
          */
-        BoundedQueueV2 queue = new BoundedQueueV2(2);
+        BoundedQueue queue = new BoundedQueueV6_1(2);
 
         //2. 생산자, 소비자 실행 순서 선택 , 반드시 하나만 선택!
         /*
