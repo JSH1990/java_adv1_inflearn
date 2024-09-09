@@ -1,0 +1,154 @@
+package thread.excutor.future;
+
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import java.util.ArrayList;
+
+public int insertScIPBIpbinfo(RegisterDto regDto, NodeList ipbList) {
+    logger.info("CALL insertScIPBIpbinfo : "+regDto.getToKey()+", "+regDto.getTocoId());
+    int rtInt = 0;		//등록할 검색용 IPB 부대급 데이터가 없을 수도 있기에 0으로 초기화
+
+    if (ipbList == null || ipbList.getLength() == 0 || regDto == null) {
+        logger.info("insertScIPBIpbinfo Return : "+regDto.getToKey()+", "+regDto.getTocoId());
+        return rtInt;
+    }
+
+    try {
+        ArrayList<SearchPartinfoDto> insertList = new ArrayList<SearchPartinfoDto>(); //SearchPartinfoDto : tm_sc_partinfo테이블 컬럼
+        int insertCnt		= 0;
+
+        String ipbId		= "";
+        String ipbCode	= "";
+
+        for (int loop=0; loop<ipbList.getLength(); loop++) { //노드의 길이만큼 for문
+            Node ipbNode = ipbList.item(loop);
+
+            if (ipbNode == null || !ipbNode.getNodeName().equals(DTD.IPB_PARTINFO)) {
+                continue;
+            }
+
+            logger.info(getNodeString(ipbNode));
+
+            ipbId = XmlDomParser.getAttributes(ipbNode.getAttributes(), ATTR.ID); //ipbId : ipbcode가 있는 id 값.
+            ipbCode = XmlDomParser.getAttributes(ipbNode.getAttributes(), ATTR.IPB_IPBCODE); //ipbCode : ex) "AA"
+
+            //ipbcode 자리수 제한
+            if (!ipbCode.equals("")
+                    && (ipbCode.length() == 2 || ipbCode.charAt(ipbCode.length()-1) > CHAR.REG_IPB_CODE)) {
+            } else {
+                ipbCode = "";
+            }
+            if (ipbId.equals("") || ipbCode.equals("")) {
+                logger.info("SearchRegister.insertScIPBExecIpbinfo Contents is NULL");
+                //continue;
+                logger.info("Pass continue");
+            }
+
+            SearchPartinfoDto scDto = new SearchPartinfoDto();
+            scDto.setToKey(regDto.getToKey());
+            scDto.setTocoId(ipbId);		//IPB TO는 ipb_id가 목차_id가 됨
+            scDto.setIpbCode(ipbCode);
+            scDto.setCreateUserId(regDto.getUserId());
+            insertList.add(scDto);
+
+            insertCnt++;
+
+            //tm_sc_partinfo 테이블의 갯수가 100을 넘기전까지 데이터를 집어넣음 (id, ipbCode, userId)
+            if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                    for(int j=0; j<insertList.size(); j++) {
+                        rtInt = scPartMapper.insertAllDaoMDB(insertList.get(j));
+                    }
+                } else {
+                    //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                    if(insertList.size() >= IConstants.REG_MAXIMUM){
+                        for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                            ArrayList<SearchPartinfoDto> tempInsertList = new ArrayList<SearchPartinfoDto>();
+                            if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                            }else{
+                                tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                            }
+                            rtInt = scPartMapper.insertAllDao(tempInsertList);
+
+                            /*
+                            <!-- Insert All --><!-- 사용 20160924 -->
+	<insert id="insertAllDao" parameterType="com.soltworks.expis.ietm.sc.dto.SearchPartinfoDto">
+		INSERT INTO tm_sc_partinfo
+			(
+				to_key,
+				toco_id,
+				index_no,
+				grph_no,
+				ipb_code,
+				part_no,
+				part_name,
+				nsn,
+				cage,
+				rdn,
+				upa,
+				smr,
+				std_mngt,
+				wuc,
+				create_user_id,
+				create_date
+			)
+			VALUES
+			<foreach collection="list" item="item" index="index" separator=",">
+			(
+				#{item.toKey},
+				#{item.tocoId},
+				#{item.indexNo},
+				#{item.grphNo},
+				#{item.ipbCode},
+				#{item.partNo},
+				#{item.partName},
+				#{item.nsn},
+				#{item.cage},
+				#{item.rdn},
+				#{item.upa},
+				#{item.smr},
+				#{item.stdMngt},
+				#{item.wuc},
+				#{item.createUserId},
+				SYSDATE()
+			)
+		</foreach>
+	</insert>
+                             */
+                        }
+                    }else {
+                        rtInt = scPartMapper.insertAllDao(insertList);
+                    }
+                    //rtInt = scPartMapper.insertAllDao(insertList);
+                }
+                insertList = new ArrayList<SearchPartinfoDto>();
+                if (rtInt <= 0) { break; }
+            }
+        }
+
+        if (insertList.size() > 0) {
+            if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                for(int j=0; j<insertList.size(); j++) {
+                    rtInt = scPartMapper.insertAllDaoMDB(insertList.get(j));
+                    try {Thread.sleep(100);  }catch (Exception e) {}//2021 08 24 에러 확인용
+                }
+            } else {
+                rtInt = scPartMapper.insertAllDao(insertList);
+            }
+            insertList = null;
+        }
+
+        logger.info("SearchRegister.insertScIPBIpbinfo insertList.size():"+insertCnt+", rtInt:"+rtInt);
+        //insertCnt : xml문서안에 ipbcode가 있는 id파싱 갯수
+        //rtInt : 성공된 열의 반환 값 (ex - 11이면 11개의 열이 DB에 입력된 것을 뜻함)
+
+    } catch (Exception ex) {
+        //ex.printStackTrace();
+        logger.error("SearchRegister.insertScIPBIpbinfo Exception : "+regDto.getToKey(),ex);
+        return -1;
+    }
+
+    return rtInt;
+}

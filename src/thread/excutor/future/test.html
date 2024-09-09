@@ -1,0 +1,1604 @@
+package com.soltworks.expis.ietm.tm.register;
+
+import java.io.StringWriter;
+import java.util.ArrayList;
+
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerException;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.stereotype.Component;
+import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import com.soltworks.expis.common.ExtConfig;
+import com.soltworks.expis.common.ExternalFileEx;
+import com.soltworks.expis.common.IConstants;
+import com.soltworks.expis.domparser.ATTR;
+import com.soltworks.expis.domparser.CHAR;
+import com.soltworks.expis.domparser.CodeConverter;
+import com.soltworks.expis.domparser.DTD;
+import com.soltworks.expis.domparser.XALAN;
+import com.soltworks.expis.domparser.XmlDomParser;
+import com.soltworks.expis.ietm.sc.dao.SearchContMapper;
+import com.soltworks.expis.ietm.sc.dao.SearchFIMapper;
+import com.soltworks.expis.ietm.sc.dao.SearchIPBMapper;
+import com.soltworks.expis.ietm.sc.dao.SearchPartinfoMapper;
+import com.soltworks.expis.ietm.sc.dao.SearchWucMapper;
+import com.soltworks.expis.ietm.sc.dto.SearchDto;
+import com.soltworks.expis.ietm.sc.dto.SearchPartinfoDto;
+import com.soltworks.expis.ietm.tm.register.RegisterDto;
+
+
+/**
+* [IETM-TM]TO목차내용(UUID.xml) XML 정보를 검색(Search) DB에 등록하는 Register Class
+*  *
+* @FileName			: SearchRegister.java
+* @Author				: LIM Y.M.
+* @Date					: 2016. 09. 23.
+*/
+@Component
+public class SearchRegister {
+
+@Autowired
+private ContRegister contRegister;
+
+@Autowired
+private SearchContMapper scContMapper;
+
+@Autowired
+private SearchFIMapper scFiMapper;
+
+@Autowired
+private SearchIPBMapper scIpbMapper;
+
+@Autowired
+private SearchPartinfoMapper scPartMapper;
+
+@Autowired
+private SearchWucMapper scWucMapper;
+
+
+/**
+* Logback 라이브러리 사용 logger 선언
+*/
+private Logger logger = LoggerFactory.getLogger(this.getClass());
+
+/**
+* 생성자
+*/
+public SearchRegister() {
+}
+
+/**
+* 2022 06 27 Park J.S. ADD
+*/
+AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext(ExtConfig.class);
+ExternalFileEx ext = ctx.getBean("extConf",ExternalFileEx.class);
+
+
+/**
+* TO목차내용(UUID.xml) 중 검색 내용 중 Contents 전체 관련 XCont(XML Data) DB 등록
+* @MethodName	: insertScCont
+* @AuthorDate		: LIM Y.M. / 2016. 10. 4.
+* @ModificationHistory	:
+* @param regDto, contElem
+* @return
+*/
+public int insertScCont(RegisterDto regDto, Element contElem) {
+
+int rtInt = 0;		//등록할 검색 내용 데이터가 없을 수도 있기에 0으로 초기화
+
+if (contElem == null || regDto == null) {
+return rtInt;
+}
+
+try {
+NodeList textList = XmlDomParser.getNodeListFromXPathAPI(contElem, XALAN.REG_TEXT);
+if (textList.getLength() <= 0) {
+return rtInt;
+}
+
+ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+    int insertCnt = 0;
+    StringBuffer contSB = new StringBuffer("");
+
+    for (int loop=0; loop<textList.getLength(); loop++) {
+    Node textNode = textList.item(loop);
+
+    if (textNode != null && textNode.getNodeName().equals(DTD.TEXT)) {
+    String cont = XmlDomParser.getTxt(textNode);
+    cont = CodeConverter.deleteAllCode(cont);
+    //2023.05.04 jysi EDIT : Contents 내용 중 마지막 텍스트가 ""일 경우 검색 내용 데이터가 등록되지 않는 현상 수정
+    //if (cont.equals("")) {
+    if (cont.equals("") && contSB.length() <= IConstants.REG_CHECK_STR_LEN && loop != (textList.getLength()-1)) {
+    continue;
+    }
+
+    if (contSB != null && contSB.length() > 0 && !cont.equals("")) {
+    contSB.append(CHAR.SEARCH_TEXT);
+    }
+    contSB.append(cont);
+
+    if (contSB.length() > IConstants.REG_CHECK_STR_LEN || loop == (textList.getLength() - 1)) {
+    ArrayList<SearchDto> tempList = this.insertScContSet(regDto, contSB, "");
+        if (tempList != null && tempList.size() > 0) {
+        insertList.addAll(tempList);
+        }
+        contSB = new StringBuffer("");
+        }
+
+        if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+        if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+        for(int j=0; j<insertList.size(); j++) {
+        rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+        }
+        } else {
+        //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+        if(insertList.size() >= IConstants.REG_MAXIMUM){
+        for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+        ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+            if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+            tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+            }else{
+            tempInsertList.addAll(insertList.subList(j, insertList.size()));
+            }
+            rtInt = scContMapper.insertAllDao(tempInsertList);
+            }
+            }else {
+            rtInt = scContMapper.insertAllDao(insertList);
+            }
+            //rtInt = scContMapper.insertAllDao(insertList);
+            }
+            insertCnt += insertList.size();
+            insertList = new ArrayList<SearchDto>();
+                if (rtInt <= 0) { break; }
+                }
+                }
+                }
+
+                if (insertList.size() > 0) {
+                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                for(int j=0; j<insertList.size(); j++) {
+                rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                }
+                } else {
+                rtInt = scContMapper.insertAllDao(insertList);
+                }
+                insertCnt += insertList.size();
+                insertList = null;
+                }
+                logger.info("SearchRegister.insertScCont insertList.size():"+insertCnt+", rtInt:"+rtInt);
+                } catch (Exception ex) {
+                ex.printStackTrace();
+                logger.error("SearchRegister.insertScCont Exception : "+regDto.getToKey(),ex);
+                return -1;
+                }
+
+                return rtInt;
+                }
+
+
+                /**
+                * TO목차내용(UUID.xml) 중 검색 내용 중 FI의 Contents 전체 관련 XCont(XML Data) DB 등록
+                * @MethodName	: insertScContFI
+                * @AuthorDate		: LIM Y.M. / 2016. 10. 17.
+                * @ModificationHistory	:
+                * @param regDto, contElem
+                * @return
+                * FI일 경우에는 상위 partinfo의 id가 목차id가 됨 (<partinfo id=""><partbase><text />)
+                    */
+                    public int insertScContFI(RegisterDto regDto, Node contNode, String tocoId) {
+
+                    int rtInt = 0;		//등록할 검색 내용 데이터가 없을 수도 있기에 0으로 초기화
+
+                    if (contNode == null || regDto == null) {
+                    return rtInt;
+                    }
+
+                    try {
+                    NodeList textList = XmlDomParser.getNodeListFromXPathAPI(contNode, XALAN.REG_FI_TEXT);
+                    if (textList.getLength() <= 0) {
+                    return rtInt;
+                    }
+
+                    ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                        int insertCnt = 0;
+                        StringBuffer contSB = new StringBuffer("");
+
+                        for (int loop=0; loop<textList.getLength(); loop++) {
+                        Node textNode = textList.item(loop);
+
+                        if (textNode != null && textNode.getNodeName().equals(DTD.TEXT)) {
+                        String cont = XmlDomParser.getTxt(textNode);
+                        cont = CodeConverter.deleteAllCode(cont);
+                        if (cont.equals("")) {
+                        continue;
+                        }
+
+                        if (contSB != null && contSB.length() > 0 && !cont.equals("")) {
+                        contSB.append(CHAR.SEARCH_TEXT);
+                        }
+                        contSB.append(cont);
+
+                        if (contSB.length() > IConstants.REG_CHECK_STR_LEN || loop == (textList.getLength() - 1)) {
+                        ArrayList<SearchDto> tempList = this.insertScContSet(regDto, contSB, tocoId);
+                            if (tempList != null && tempList.size() > 0) {
+                            insertList.addAll(tempList);
+                            }
+                            contSB = new StringBuffer("");
+                            }
+
+                            if (insertList.size() >= IConstants.REG_MAX_LIST_SMALL) {
+                            if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                            for(int j=0; j<insertList.size(); j++) {
+                            rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                            }
+                            } else {
+                            //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                            if(insertList.size() >= IConstants.REG_MAXIMUM){
+                            for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                            ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                }else{
+                                tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                }
+                                rtInt = scContMapper.insertAllDao(tempInsertList);
+                                }
+                                }else {
+                                rtInt = scContMapper.insertAllDao(insertList);
+                                }
+                                //rtInt = scContMapper.insertAllDao(insertList);
+                                }
+                                insertCnt += insertList.size();
+                                insertList = new ArrayList<SearchDto>();
+                                    if (rtInt <= 0) { break; }
+                                    }
+                                    }
+                                    }
+
+                                    if (insertList.size() > 0) {
+                                    if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                    for(int j=0; j<insertList.size(); j++) {
+                                    rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                    }
+                                    } else {
+                                    rtInt = scContMapper.insertAllDao(insertList);
+                                    }
+                                    insertCnt += insertList.size();
+                                    insertList = null;
+                                    }
+                                    logger.info("SearchRegister.insertScCont insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+                                    } catch (Exception ex) {
+                                    ex.printStackTrace();
+                                    logger.error("SearchRegister.insertScCont Exception : "+regDto.getToKey(),ex);
+                                    return -1;
+                                    }
+
+                                    return rtInt;
+                                    }
+
+
+                                    /**
+                                    * TO목차내용(UUID.xml) 중 검색 내용 중 IPB의 Contents 전체 관련 XCont(XML Data) DB 등록
+                                    * @MethodName	: insertScContIPBBefore
+                                    * @AuthorDate		: LIM Y.M. / 2016. 10. 5.
+                                    * @ModificationHistory	:
+                                    * @param regDto, pinfoList
+                                    * @return
+                                    * IPB일 경우에는 상위 partinfo의 id가 목차id가 됨 (<partinfo id=""><partbase><text />)
+                                        * partbase 밑에  text 노드의 값을 name=''으로 추가하기 전에 처리할 경우 사용
+                                        */
+                                        public int insertScContIPB(RegisterDto regDto, NodeList pinfoList) {
+
+                                        int rtInt = 0;		//등록할 검색용 IPB 부대급 데이터가 없을 수도 있기에 0으로 초기화
+
+                                        if (pinfoList == null || pinfoList.getLength() == 0 || regDto == null) {
+                                        return rtInt;
+                                        }
+
+                                        try {
+                                        String tocoId = "";
+
+                                        ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                            int insertCnt = 0;
+                                            StringBuffer contSB = new StringBuffer();
+
+                                            for (int loop=0; loop<pinfoList.getLength(); loop++) {
+                                            Node pinfoNode = pinfoList.item(loop);
+                                            if (pinfoNode == null || !pinfoNode.getNodeName().equals(DTD.IPB_PARTINFO)) {
+                                            continue;
+                                            }
+
+                                            //자식노드가 잇을 경우에만 해당 partinfo 노드를 목차로 추가함
+                                            NodeList childList = XmlDomParser.getNodeListFromXPathAPI(pinfoNode, XALAN.REG_IPB_PBASE_CCHILD);
+                                            if (childList.getLength() > 0) {
+                                            tocoId = XmlDomParser.getAttributes(pinfoNode.getAttributes(), ATTR.ID);
+
+                                            for (int sub=0; sub<childList.getLength(); sub++) {
+                                            contSB = new StringBuffer();
+                                            Node pbaseNode = childList.item(sub);
+                                            if (pbaseNode == null || !pbaseNode.getNodeName().equals(DTD.IPB_PARTBASE)) {
+                                            continue;
+                                            }
+
+                                            //String cont = XmlDomParser.getTxt(pbaseNode);
+                                            String cont = XmlDomParser.getAttributes(pbaseNode.getAttributes(), ATTR.NAME);
+                                            contSB.append(cont);
+
+                                            ArrayList<SearchDto> tempList = this.insertScContSet(regDto, contSB, tocoId);
+                                                if (tempList != null && tempList.size() > 0) {
+                                                insertList.addAll(tempList);
+                                                }
+
+                                                if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                for(int j=0; j<insertList.size(); j++) {
+                                                rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                }
+                                                } else {
+                                                //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                                    if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                    tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                    }else{
+                                                    tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                    }
+                                                    rtInt = scContMapper.insertAllDao(tempInsertList);
+                                                    }
+                                                    }else {
+                                                    rtInt = scContMapper.insertAllDao(insertList);
+                                                    }
+                                                    //rtInt = scContMapper.insertAllDao(insertList);
+                                                    }
+                                                    insertCnt += insertList.size();
+                                                    insertList = new ArrayList<SearchDto>();
+                                                        if (rtInt <= 0) { break; }
+                                                        }
+                                                        }
+                                                        }
+                                                        }
+
+                                                        if (insertList.size() > 0) {
+                                                        if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                        for(int j=0; j<insertList.size(); j++) {
+                                                        rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                        }
+
+                                                        } else {
+                                                        rtInt = scContMapper.insertAllDao(insertList);
+                                                        }
+                                                        insertCnt += insertList.size();
+                                                        insertList = null;
+                                                        }
+
+                                                        logger.info("SearchRegister.insertScContIPBAfter insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+                                                        } catch (Exception ex) {
+                                                        ex.printStackTrace();
+                                                        logger.error("SearchRegister.insertScContIPBAfter Exception : "+regDto.getToKey(),ex);
+                                                        return -1;
+                                                        }
+
+                                                        return rtInt;
+                                                        }
+
+
+                                                        public int insertScContIPB1(RegisterDto regDto, Element contElem) {
+
+                                                        int rtInt = 0;		//등록할 검색 내용 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                        if (contElem == null || regDto == null) {
+                                                        return rtInt;
+                                                        }
+
+                                                        try {
+                                                        NodeList pbaseList = XmlDomParser.getNodeListFromXPathAPI(contElem, XALAN.REG_IPB_PBASE);
+                                                        if (pbaseList.getLength() <= 0) {
+                                                        return rtInt;
+                                                        }
+
+                                                        ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                                            int insertCnt = 0;
+
+                                                            for (int loop=0; loop<pbaseList.getLength(); loop++) {
+                                                            Node pbaseNode = pbaseList.item(loop);
+                                                            String tocoId = "";
+                                                            StringBuffer contSB = new StringBuffer("");
+
+                                                            //partinfo(part 자식있는 노드) 노드
+                                                            if (pbaseNode == null || !pbaseNode.getNodeName().equals(DTD.IPB_PARTBASE)) {
+                                                            continue;
+                                                            }
+
+                                                            if (pbaseNode.getParentNode().getParentNode() != null) {
+                                                            Node pinfoNode = pbaseNode.getParentNode().getParentNode();
+                                                            if (pinfoNode != null && pinfoNode.getNodeName().equals(DTD.IPB_PARTINFO)) {
+                                                            tocoId = XmlDomParser.getAttributes(pinfoNode.getAttributes(), ATTR.ID);
+                                                            }
+                                                            }
+                                                            NodeList textList = XmlDomParser.getNodeListFromXPathAPI(pbaseNode, XALAN.REG_IPB_TEXT);
+                                                            if (textList.getLength() <= 0 || tocoId.equals("")) {
+                                                            continue;
+                                                            }
+
+                                                            for (int sub=0; sub<textList.getLength(); sub++) {
+                                                            Node textNode = textList.item(sub);
+
+                                                            //partinfo(part 자식있는 노드) > partinfo(part 자식없는 노드) > partbase > text 노드
+                                                            if (textNode != null && textNode.getNodeName().equals(DTD.TEXT)) {
+                                                            String cont = XmlDomParser.getTxt(textNode);
+                                                            cont = CodeConverter.deleteAllCode(cont);
+                                                            if (cont.equals("")) {
+                                                            continue;
+                                                            }
+
+                                                            if (contSB != null && contSB.length() > 0 && !cont.equals("")) {
+                                                            contSB.append(CHAR.SEARCH_TEXT);
+                                                            }
+                                                            contSB.append(cont);
+
+                                                            if (contSB.length() > IConstants.REG_CHECK_STR_LEN || sub == (textList.getLength() - 1)) {
+                                                            ArrayList<SearchDto> tempList = this.insertScContSet(regDto, contSB, tocoId);
+                                                                if (tempList != null && tempList.size() > 0) {
+                                                                insertList.addAll(tempList);
+                                                                }
+                                                                contSB = new StringBuffer("");
+                                                                }
+
+                                                                if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                for(int j=0; j<insertList.size(); j++) {
+                                                                rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                                }
+                                                                } else {
+                                                                //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                                                    if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                    tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                    }else{
+                                                                    tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                    }
+                                                                    rtInt = scContMapper.insertAllDao(tempInsertList);
+                                                                    }
+                                                                    }else {
+                                                                    rtInt = scContMapper.insertAllDao(insertList);
+                                                                    }
+                                                                    //rtInt = scContMapper.insertAllDao(insertList);
+                                                                    }
+                                                                    insertCnt += insertList.size();
+                                                                    insertList = new ArrayList<SearchDto>();
+                                                                        if (rtInt <= 0) { break; }
+                                                                        }
+                                                                        }
+                                                                        }
+                                                                        }
+
+                                                                        if (insertList.size() > 0) {
+                                                                        if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                        for(int j=0; j<insertList.size(); j++) {
+                                                                        rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                                        }
+                                                                        } else {
+                                                                        rtInt = scContMapper.insertAllDao(insertList);
+                                                                        }
+                                                                        insertCnt += insertList.size();
+                                                                        insertList = null;
+                                                                        }
+
+                                                                        logger.info("SearchRegister.insertScContIPBBefore insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+                                                                        } catch (Exception ex) {
+                                                                        ex.printStackTrace();
+                                                                        logger.error("SearchRegister.insertScContIPBBefore Exception : "+regDto.getToKey(),ex);
+                                                                        return -1;
+                                                                        }
+
+                                                                        return rtInt;
+                                                                        }
+
+
+                                                                        public int insertScContIPB2(RegisterDto regDto, Element contElem) {
+
+                                                                        int rtInt = 0;		//등록할 검색 내용 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                                        if (contElem == null || regDto == null) {
+                                                                        return rtInt;
+                                                                        }
+
+                                                                        try {
+                                                                        NodeList pbaseList = XmlDomParser.getNodeListFromXPathAPI(contElem, XALAN.REG_IPB_PBASE_ALL);
+                                                                        if (pbaseList.getLength() <= 0) {
+                                                                        return rtInt;
+                                                                        }
+
+                                                                        ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                                                            int insertCnt = 0;
+                                                                            StringBuffer contSB = new StringBuffer("");
+
+                                                                            for (int loop=0; loop<pbaseList.getLength(); loop++) {
+                                                                            Node pbaseNode = pbaseList.item(loop);
+                                                                            String tocoId = "";
+                                                                            //StringBuffer contSB = new StringBuffer("");
+
+                                                                            if (pbaseNode == null || !pbaseNode.getNodeName().equals(DTD.IPB_PARTBASE)) {
+                                                                            continue;
+                                                                            }
+
+                                                                            if (pbaseNode.getParentNode().getParentNode() != null) {
+                                                                            Node pinfoNode = pbaseNode.getParentNode().getParentNode();
+                                                                            if (pinfoNode != null && pinfoNode.getNodeName().equals(DTD.IPB_PARTINFO)) {
+                                                                            tocoId = XmlDomParser.getAttributes(pinfoNode.getAttributes(), ATTR.ID);
+                                                                            }
+                                                                            }
+
+                                                                            String pbaseName = XmlDomParser.getAttributes(pbaseNode.getAttributes(), ATTR.NAME);
+                                                                            pbaseName = CodeConverter.deleteAllCode(pbaseName);
+                                                                            if (pbaseName.equals("")) {
+                                                                            continue;
+                                                                            }
+
+                                                                            if (contSB != null && contSB.length() > 0 && !pbaseName.equals("")) {
+                                                                            contSB.append(CHAR.SEARCH_TEXT);
+                                                                            }
+                                                                            contSB.append(pbaseName);
+
+                                                                            if (contSB.length() > IConstants.REG_CHECK_STR_LEN || loop == (pbaseList.getLength() - 1)) {
+                                                                            ArrayList<SearchDto> tempList = this.insertScContSet(regDto, contSB, tocoId);
+                                                                                if (tempList != null && tempList.size() > 0) {
+                                                                                insertList.addAll(tempList);
+                                                                                }
+                                                                                contSB = new StringBuffer("");
+                                                                                }
+
+                                                                                if (insertList.size() >= IConstants.REG_MAX_LIST_SMALL) {
+                                                                                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                for(int j=0; j<insertList.size(); j++) {
+                                                                                rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                }
+                                                                                } else {
+                                                                                //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                                if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                                for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                                ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                                                                    if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                                    tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                                    }else{
+                                                                                    tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                                    }
+                                                                                    rtInt = scContMapper.insertAllDao(tempInsertList);
+                                                                                    }
+                                                                                    }else {
+                                                                                    rtInt = scContMapper.insertAllDao(insertList);
+                                                                                    }
+                                                                                    //rtInt = scContMapper.insertAllDao(insertList);
+                                                                                    }
+                                                                                    insertCnt += insertList.size();
+                                                                                    insertList = new ArrayList<SearchDto>();
+                                                                                        if (rtInt <= 0) { break; }
+                                                                                        }
+                                                                                        }
+
+                                                                                        if (insertList.size() > 0) {
+                                                                                        if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                        for(int j=0; j<insertList.size(); j++) {
+                                                                                        rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                        }
+                                                                                        } else {
+                                                                                        rtInt = scContMapper.insertAllDao(insertList);
+                                                                                        }
+                                                                                        insertCnt += insertList.size();
+                                                                                        insertList = null;
+                                                                                        }
+
+                                                                                        logger.info("SearchRegister.insertScContIPBAfter insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+                                                                                        } catch (Exception ex) {
+                                                                                        ex.printStackTrace();
+                                                                                        logger.error("SearchRegister.insertScContIPBAfter Exception : "+regDto.getToKey(),ex);
+                                                                                        }
+
+                                                                                        return rtInt;
+                                                                                        }
+
+
+                                                                                        /**
+                                                                                        * TO목차내용(UUID.xml) 중 검색 내용 중 Contents 전체 관련 XCont(XML Data) DB 등록 실행
+                                                                                        * @MethodName	: insertScContSet
+                                                                                        * @AuthorDate		: LIM Y.M. / 2016. 10. 4.
+                                                                                        * @ModificationHistory	:
+                                                                                        * @param regDto, contSB, tocoId
+                                                                                        * @return
+                                                                                        */
+                                                                                        public ArrayList<SearchDto> insertScContSet(RegisterDto regDto, StringBuffer contSB, String tocoId) {
+
+                                                                                            ArrayList<SearchDto> rtList = new ArrayList<SearchDto>();
+
+                                                                                                if (contSB == null || contSB.length() == 0 || regDto == null) {
+                                                                                                return rtList;
+                                                                                                }
+
+                                                                                                try {
+                                                                                                int maxStrLength	= IConstants.REG_MAX_STR_LEN - 300;
+                                                                                                int maxLoop			= contSB.length() / maxStrLength + 1;
+
+                                                                                                if (tocoId.equals("")) {
+                                                                                                tocoId = regDto.getTocoId();
+                                                                                                }
+
+                                                                                                for (int i=0; i<maxLoop; i++) {
+                                                                                                String cont = "";
+                                                                                                maxStrLength	= IConstants.REG_MAX_STR_LEN - 300;
+                                                                                                int lastIdx = -1;
+
+                                                                                                if (contSB.length() < maxStrLength) {	//마지막일 때는 문자열 끊지않음
+                                                                                                maxStrLength = contSB.length();
+                                                                                                cont = contSB.toString().substring(0, maxStrLength);
+                                                                                                } else {
+                                                                                                cont = contSB.toString().substring(0, maxStrLength);
+
+                                                                                                //검색용 Text 테이블은 순서(xth)가 없기 때문에 단어가 중간에 끊어지는 방지위해 공백(" ")으로 끊음
+                                                                                                lastIdx = cont.lastIndexOf(" ");
+                                                                                                if (!cont.equals("") && lastIdx > 0) {
+                                                                                                cont = contSB.toString().substring(0, lastIdx);
+                                                                                                maxStrLength = lastIdx;
+                                                                                                }
+
+                                                                                                if (cont.equals("")) {
+                                                                                                logger.info("SearchRegister.insertScContSet Contents is NULL Exception");
+                                                                                                continue;
+                                                                                                }
+                                                                                                }
+
+                                                                                                SearchDto scDto = new SearchDto();
+                                                                                                scDto.setToKey(regDto.getToKey());
+                                                                                                scDto.setTocoId(tocoId);
+                                                                                                scDto.setCont(cont);
+                                                                                                scDto.setCreateUserId(regDto.getUserId());
+                                                                                                rtList.add(scDto);
+
+                                                                                                if (contSB.length() > 0 && contSB.length() > maxStrLength) {
+                                                                                                contSB = new StringBuffer(contSB.toString().substring(maxStrLength, contSB.length()));
+                                                                                                }
+                                                                                                if (contSB.length() <= 0) {
+                                                                                                break;
+                                                                                                }
+                                                                                                }
+
+                                                                                                } catch (Exception ex) {
+                                                                                                ex.printStackTrace();
+                                                                                                logger.error("SearchRegister.insertScContSet Exception : "+regDto.getToKey(),ex);
+                                                                                                }
+
+                                                                                                return rtList;
+                                                                                                }
+
+                                                                                                /**
+                                                                                                * JG 타입의 준비사항내  "필수교환 품목 및 소모성 물자 : consum" , "기타요건 : othercond" 테이블의 내용이 검색 되도록 SCCont DB 등록
+                                                                                                * @AuthorDate		: jingi.kim / 2024.02.13.
+                                                                                                * @ModificationHistory	:
+                                                                                                * @param regDto
+                                                                                                * @param contElem
+                                                                                                * @return
+                                                                                                */
+                                                                                                public int insertScContJG(RegisterDto regDto, Element contElem) {
+
+                                                                                                int rtInt = 0;		//등록할 검색 내용 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                                                                if (contElem == null || regDto == null) {
+                                                                                                return rtInt;
+                                                                                                }
+
+                                                                                                try {
+
+                                                                                                // consum
+                                                                                                NodeList consumList = XmlDomParser.getNodeListFromXPathAPI(contElem, "//"+DTD.IN_CONSUM);
+                                                                                                if (consumList.getLength() <= 0) {
+                                                                                                return rtInt;
+                                                                                                }
+
+                                                                                                ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                                                                                    int insertCnt = 0;
+                                                                                                    StringBuffer contSB = new StringBuffer("");
+
+                                                                                                    for (int loop=0; loop<consumList.getLength(); loop++) {
+                                                                                                    Node consumNode = consumList.item(loop);
+                                                                                                    if ( consumNode == null || !consumNode.getNodeName().equalsIgnoreCase(DTD.IN_CONSUM) ) continue;
+
+                                                                                                    String conGovstd = XmlDomParser.getAttributes(consumNode.getAttributes(), ATTR.IN_GOVSTD);
+                                                                                                    if ( !"".equals(conGovstd) ) {
+                                                                                                    contSB.append(conGovstd);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+
+                                                                                                    String conPartnum = XmlDomParser.getAttributes(consumNode.getAttributes(), ATTR.IN_PARTNUM);
+                                                                                                    if ( !"".equals(conPartnum) ) {
+                                                                                                    contSB.append(conPartnum);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+
+                                                                                                    String conQuantity = XmlDomParser.getAttributes(consumNode.getAttributes(), ATTR.IN_QUANTITY);
+                                                                                                    if ( !"".equals(conQuantity) ) {
+                                                                                                    contSB.append(conQuantity);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+
+                                                                                                    // partbase
+                                                                                                    NodeList partList = consumNode.getChildNodes();
+                                                                                                    if (partList.getLength() > 0) {
+                                                                                                    for ( int p=0; p<partList.getLength(); p++ ) {
+                                                                                                    Node partNode = partList.item(p);
+                                                                                                    if ( partNode == null || !partNode.getNodeName().equalsIgnoreCase(DTD.IN_PARTBASE) ) continue;
+
+                                                                                                    String partName = XmlDomParser.getAttributes(partNode.getAttributes(), ATTR.IN_NAME);
+                                                                                                    if ( !"".equals(partName) ) {
+                                                                                                    contSB.append(partName);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+
+                                                                                                    String partNum = XmlDomParser.getAttributes(partNode.getAttributes(), ATTR.IN_PARTNUM);
+                                                                                                    if ( !"".equals(partNum) ) {
+                                                                                                    contSB.append(partNum);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+
+                                                                                                    String partCage = XmlDomParser.getAttributes(partNode.getAttributes(), ATTR.IN_CAGE);
+                                                                                                    if ( !"".equals(partCage) ) {
+                                                                                                    contSB.append(partCage);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+                                                                                                    }
+                                                                                                    }
+
+                                                                                                    }
+
+
+                                                                                                    // othercond
+                                                                                                    NodeList othercondList = XmlDomParser.getNodeListFromXPathAPI(contElem, XALAN.INXALAN_OTHERCOND);
+                                                                                                    if (othercondList.getLength() > 0) {
+                                                                                                    for (int lp=0; lp<othercondList.getLength(); lp++) {
+                                                                                                    Node othercondNode = othercondList.item(lp);
+                                                                                                    if ( othercondNode == null || !othercondNode.getNodeName().equalsIgnoreCase(DTD.IN_OTHERCOND) ) continue;
+
+                                                                                                    String othercondItem = XmlDomParser.getAttributes(othercondNode.getAttributes(), ATTR.IN_OTH_ITEM);
+                                                                                                    if ( !"".equals(othercondItem) ) {
+                                                                                                    contSB.append(othercondItem);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+
+                                                                                                    String othercondDesc = XmlDomParser.getAttributes(othercondNode.getAttributes(), ATTR.IN_OTH_DESC);
+                                                                                                    if ( !"".equals(othercondDesc) ) {
+                                                                                                    contSB.append(othercondDesc);
+                                                                                                    contSB.append(CHAR.SEARCH_TEXT);
+                                                                                                    }
+                                                                                                    }
+                                                                                                    }
+
+                                                                                                    if ( contSB.length() > 0 ) {
+                                                                                                    ArrayList<SearchDto> tempList = this.insertScContSet(regDto, contSB, "");
+                                                                                                        if (tempList != null && tempList.size() > 0) {
+                                                                                                        insertList.addAll(tempList);
+                                                                                                        }
+                                                                                                        contSB = new StringBuffer("");
+                                                                                                        }
+
+                                                                                                        if ( insertList.size() >= 0 ) {
+                                                                                                        if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                                                        for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                                                        ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                                                                                            if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                                                            tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                                                            }else{
+                                                                                                            tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                                                            }
+                                                                                                            rtInt = scContMapper.insertAllDao(tempInsertList);
+                                                                                                            }
+                                                                                                            } else {
+                                                                                                            rtInt = scContMapper.insertAllDao(insertList);
+                                                                                                            }
+
+                                                                                                            insertCnt += insertList.size();
+                                                                                                            insertList = new ArrayList<SearchDto>();
+                                                                                                                if (rtInt <= 0) { return rtInt; }
+                                                                                                                }
+
+                                                                                                                logger.info("SearchRegister.insertScContJG insertList.size() : "+insertCnt+" ,  rtInt:"+rtInt);
+                                                                                                                } catch (Exception ex) {
+                                                                                                                ex.printStackTrace();
+                                                                                                                logger.error("SearchRegister.insertScContJG Exception : "+regDto.getToKey(),ex);
+                                                                                                                return -1;
+                                                                                                                }
+
+                                                                                                                return rtInt;
+                                                                                                                }
+
+                                                                                                                /**
+                                                                                                                * TO목차내용(UUID.xml) 중 검색 내용 중 FI 관련 XCont(XML Data) DB 등록
+                                                                                                                * @MethodName	: insertScFI
+                                                                                                                * @AuthorDate		: LIM Y.M. / 2016. 10. 18.
+                                                                                                                * @ModificationHistory	:
+                                                                                                                * @param regDto, fiRootNode
+                                                                                                                * @return
+                                                                                                                */
+                                                                                                                public int insertScFI(RegisterDto regDto, Node fiRootNode, Element toElem) {
+
+                                                                                                                int rtInt = 0;		//등록할 FI(fi_code) 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                                                                                if (fiRootNode == null || regDto == null) {
+                                                                                                                return rtInt;
+                                                                                                                }
+
+                                                                                                                try {
+                                                                                                                NodeList fiList = null;
+
+                                                                                                                fiList = XmlDomParser.getNodeListFromXPathAPI(fiRootNode, XALAN.REG_FI_DILR);
+                                                                                                                rtInt = this.insertScFI(regDto, fiList, IConstants.REG_FI_DILR, toElem);
+
+                                                                                                                fiList = XmlDomParser.getNodeListFromXPathAPI(fiRootNode, XALAN.REG_FI_DDS);
+                                                                                                                rtInt = this.insertScFI(regDto, fiList, IConstants.REG_FI_DDS, toElem);
+
+                                                                                                                } catch (Exception ex) {
+                                                                                                                ex.printStackTrace();
+                                                                                                                logger.error("SearchRegister.insertScFI Exception : "+regDto.getToKey(),ex);
+                                                                                                                return -1;
+                                                                                                                }
+
+                                                                                                                return rtInt;
+                                                                                                                }
+
+
+                                                                                                                /**
+                                                                                                                * TO목차내용(UUID.xml) 중 검색 내용 중 FI 관련 XCont(XML Data) DB 등록 실행
+                                                                                                                * @MethodName	: insertScFI
+                                                                                                                * @AuthorDate		: LIM Y.M. / 2016. 9. 24.
+                                                                                                                * @ModificationHistory	:
+                                                                                                                * @param regDto, fiList, getType
+                                                                                                                * @return
+                                                                                                                */
+                                                                                                                public int insertScFI(RegisterDto regDto, NodeList fiList, int getType, Element toElem) {
+
+                                                                                                                int rtInt = 0;		//등록할 FI(fi_code) 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                                                                                if (fiList == null || fiList.getLength() == 0 || regDto == null) {
+                                                                                                                return rtInt;
+                                                                                                                }
+                                                                                                                if (getType != IConstants.REG_FI_DILR && getType != IConstants.REG_FI_DDS) {
+                                                                                                                return rtInt;
+                                                                                                                }
+
+                                                                                                                try {
+                                                                                                                ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                                                                                                    int insertCnt		= 0;
+
+                                                                                                                    String fiId			= "";
+                                                                                                                    String fiCode	= "";
+
+                                                                                                                    for (int loop=0; loop<fiList.getLength(); loop++) {
+                                                                                                                    Node fiNode = fiList.item(loop);
+
+                                                                                                                    if (getType == IConstants.REG_FI_DILR) {
+                                                                                                                    if (fiNode != null && fiNode.getNodeName().equals(DTD.FI_NODE)) {
+                                                                                                                    fiId = XmlDomParser.getAttributes(fiNode.getAttributes(), ATTR.LINK_TOCO_ID);
+                                                                                                                    fiCode = CodeConverter.deleteAllCode(XmlDomParser.getTxt(fiNode));
+                                                                                                                    }
+                                                                                                                    } else if (getType == IConstants.REG_FI_DDS) {
+                                                                                                                    if (fiNode != null && fiNode.getNodeName().equals(DTD.FI_FAULTINF)) {
+                                                                                                                    fiId = XmlDomParser.getAttributes(fiNode.getAttributes(), ATTR.ID);
+                                                                                                                    fiCode = XmlDomParser.getAttributes(fiNode.getAttributes(), ATTR.NAME);
+                                                                                                                    //logger.info("=============== insertScFI check fiId : "+fiId+", fiCode : "+fiCode);
+                                                                                                                    //logger.info(" regDto : "+regDto.toString());
+
+                                                                                                                    ArrayList<String> fiCodeList = this.getFiCode(toElem, fiId);
+                                                                                                                        for ( String fcd : fiCodeList ) {
+                                                                                                                        if ( "".equals(fcd) ) continue;
+
+                                                                                                                        SearchDto scDto = new SearchDto();
+                                                                                                                        scDto.setToKey(regDto.getToKey());
+                                                                                                                        scDto.setTocoId(fiId);		//FI TO는 fi_id가 목차_id가 됨
+                                                                                                                        scDto.setFiCode(fcd);
+                                                                                                                        scDto.setCreateUserId(regDto.getUserId());
+                                                                                                                        insertList.add(scDto);
+                                                                                                                        }
+
+                                                                                                                        }
+                                                                                                                        }
+
+                                                                                                                        if (fiId.equals("") && fiCode.equals("")) {
+                                                                                                                        logger.info("SearchRegister.insertScFI Contents is NULL Exception");
+                                                                                                                        continue;
+                                                                                                                        }
+
+
+                                                                                                                        insertCnt++;
+
+                                                                                                                        if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                                                                                        if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                        for(int j=0; j<insertList.size(); j++) {
+                                                                                                                        rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                        }
+                                                                                                                        } else {
+                                                                                                                        //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                                                                        if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                                                                        for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                                                                        ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                                                                                                            if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                                                                            tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                                                                            }else{
+                                                                                                                            tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                                                                            }
+                                                                                                                            if ( getType == IConstants.REG_FI_DILR ) {
+                                                                                                                            rtInt = scContMapper.insertAllDao(tempInsertList);
+                                                                                                                            } else {
+                                                                                                                            rtInt = scFiMapper.insertAllDao(tempInsertList);
+                                                                                                                            }
+                                                                                                                            }
+                                                                                                                            }else {
+                                                                                                                            if ( getType == IConstants.REG_FI_DILR ) {
+                                                                                                                            rtInt = scContMapper.insertAllDao(insertList);
+                                                                                                                            } else {
+                                                                                                                            rtInt = scFiMapper.insertAllDao(insertList);
+                                                                                                                            }
+                                                                                                                            }
+                                                                                                                            //rtInt = scContMapper.insertAllDao(insertList);
+                                                                                                                            }
+                                                                                                                            insertList = new ArrayList<SearchDto>();
+                                                                                                                                if (rtInt <= 0) { break; }
+                                                                                                                                }
+                                                                                                                                }
+
+                                                                                                                                if (insertList.size() > 0) {
+                                                                                                                                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                rtInt = scContMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                }
+                                                                                                                                } else {
+                                                                                                                                if ( getType == IConstants.REG_FI_DILR ) {
+                                                                                                                                rtInt = scContMapper.insertAllDao(insertList);
+                                                                                                                                } else {
+                                                                                                                                rtInt = scFiMapper.insertAllDao(insertList);
+                                                                                                                                }
+
+                                                                                                                                }
+                                                                                                                                insertList = null;
+                                                                                                                                }
+                                                                                                                                logger.info("SearchRegister.insertScFI insertList.size():"+insertCnt+", rtInt:"+rtInt);
+                                                                                                                                } catch (Exception ex) {
+                                                                                                                                ex.printStackTrace();
+                                                                                                                                logger.error("SearchRegister.insertScFI Exception : "+regDto.getToKey(),ex);
+                                                                                                                                return -1;
+                                                                                                                                }
+
+                                                                                                                                return rtInt;
+                                                                                                                                }
+
+                                                                                                                                /**
+                                                                                                                                * 2023.11.24 - 고장탐구 검색을 위한 데이터 tm_sc_fi 테이블에 추가 - jingi.kim
+                                                                                                                                *  		- expis3.xml의 sssn = 34-54-00 과 name = AE 를 조합해서 34-54-AE 와 같이 ficode를 생성
+                                                                                                                                * 			- itemid 값이 AA-AD 와 같은 경우 (34-54-AA, 34-54-AD) 2건으로 처리
+                                                                                                                                * @ModificationHistory	:
+                                                                                                                                * @param toElem, fid
+                                                                                                                                * @return
+                                                                                                                                */
+                                                                                                                                public ArrayList<String> getFiCode(Element toElem, String fid) {
+                                                                                                                                    ArrayList<String> rtList = new ArrayList<String>();
+                                                                                                                                        Node nodeSystem = XmlDomParser.getNodeFromXPathAPI(toElem, XALAN.REG_SYSTEM+"[@id='"+ fid +"']");
+                                                                                                                                        if (nodeSystem == null || nodeSystem.getNodeType() != Node.ELEMENT_NODE) {
+                                                                                                                                        logger.info("============ Not Found System Node.");
+                                                                                                                                        return rtList;
+                                                                                                                                        }
+
+                                                                                                                                        String attrName = XmlDomParser.getAttributes(nodeSystem.getAttributes(), ATTR.NAME).toUpperCase();
+                                                                                                                                        String attrSssn = XmlDomParser.getAttributes(nodeSystem.getAttributes(), ATTR.IPB_SSSN).toUpperCase();
+                                                                                                                                        if ( "".equals(attrName) || "".equals(attrSssn) ) {
+                                                                                                                                        return rtList;
+                                                                                                                                        }
+                                                                                                                                        if ( attrSssn.length() < 6 ) {
+                                                                                                                                        return rtList;
+                                                                                                                                        }
+
+                                                                                                                                        String fcodepre = attrSssn.substring(0, 5);
+
+                                                                                                                                        String[] arrName = attrName.split("-");
+                                                                                                                                        for( String nm : arrName) {
+                                                                                                                                        rtList.add(fcodepre +"-"+ nm);
+                                                                                                                                        }
+
+                                                                                                                                        return rtList;
+                                                                                                                                        }
+
+                                                                                                                                        /**
+                                                                                                                                        * TO목차내용(UUID.xml) 중 검색 내용 중 IPB(ipb_code) 관련 XCont(XML Data) DB 등록 실행
+                                                                                                                                        * @MethodName	: insertScIPBIpbinfo
+                                                                                                                                        * @AuthorDate		: LIM Y.M. / 2016. 9. 26.
+                                                                                                                                        * @ModificationHistory	:
+                                                                                                                                        * @param regDto, ipbList
+                                                                                                                                        * @return
+                                                                                                                                        */
+                                                                                                                                        //@Transactional(propagation = Propagation.REQUIRED, isolation=Isolation.DEFAULT, rollbackFor={Exception.class, SQLException.class}, readOnly=false)
+                                                                                                                                        public int insertScIPBIpbinfo(RegisterDto regDto, NodeList ipbList) {
+                                                                                                                                        logger.info("CALL insertScIPBIpbinfo : "+regDto.getToKey()+", "+regDto.getTocoId());
+                                                                                                                                        int rtInt = 0;		//등록할 검색용 IPB 부대급 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                                                                                                        if (ipbList == null || ipbList.getLength() == 0 || regDto == null) {
+                                                                                                                                        logger.info("insertScIPBIpbinfo Return : "+regDto.getToKey()+", "+regDto.getTocoId());
+                                                                                                                                        return rtInt;
+                                                                                                                                        }
+
+                                                                                                                                        try {
+                                                                                                                                        ArrayList<SearchPartinfoDto> insertList = new ArrayList<SearchPartinfoDto>();
+                                                                                                                                            int insertCnt		= 0;
+
+                                                                                                                                            String ipbId		= "";
+                                                                                                                                            String ipbCode	= "";
+
+                                                                                                                                            for (int loop=0; loop<ipbList.getLength(); loop++) {
+                                                                                                                                            Node ipbNode = ipbList.item(loop);
+
+                                                                                                                                            if (ipbNode == null || !ipbNode.getNodeName().equals(DTD.IPB_PARTINFO)) {
+                                                                                                                                            continue;
+                                                                                                                                            }
+
+                                                                                                                                            logger.info(getNodeString(ipbNode));
+
+                                                                                                                                            ipbId = XmlDomParser.getAttributes(ipbNode.getAttributes(), ATTR.ID);
+                                                                                                                                            logger.info("ipbId : " + ipbId);
+                                                                                                                                            ipbCode = XmlDomParser.getAttributes(ipbNode.getAttributes(), ATTR.IPB_IPBCODE);
+                                                                                                                                            logger.info("ipbCode : " + ipbCode);
+
+                                                                                                                                            //ipbcode 자리수 제한
+                                                                                                                                            if (!ipbCode.equals("")
+                                                                                                                                            && (ipbCode.length() == 2 || ipbCode.charAt(ipbCode.length()-1) > CHAR.REG_IPB_CODE)) {
+                                                                                                                                            } else {
+                                                                                                                                            ipbCode = "";
+                                                                                                                                            }
+                                                                                                                                            if (ipbId.equals("") || ipbCode.equals("")) {
+                                                                                                                                            logger.info("SearchRegister.insertScIPBExecIpbinfo Contents is NULL");
+                                                                                                                                            //continue;
+                                                                                                                                            logger.info("Pass continue");
+                                                                                                                                            }
+
+                                                                                                                                            SearchPartinfoDto scDto = new SearchPartinfoDto();
+                                                                                                                                            scDto.setToKey(regDto.getToKey());
+                                                                                                                                            scDto.setTocoId(ipbId);		//IPB TO는 ipb_id가 목차_id가 됨
+                                                                                                                                            scDto.setIpbCode(ipbCode);
+                                                                                                                                            scDto.setCreateUserId(regDto.getUserId());
+                                                                                                                                            insertList.add(scDto);
+
+                                                                                                                                            insertCnt++;
+
+                                                                                                                                            if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                                                                                                            if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                            for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                            rtInt = scPartMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                            }
+                                                                                                                                            } else {
+                                                                                                                                            //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                                                                                            if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                                                                                            for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                                                                                            ArrayList<SearchPartinfoDto> tempInsertList = new ArrayList<SearchPartinfoDto>();
+                                                                                                                                                if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                                                                                                tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                                                                                                }else{
+                                                                                                                                                tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                                                                                                }
+                                                                                                                                                rtInt = scPartMapper.insertAllDao(tempInsertList);
+                                                                                                                                                }
+                                                                                                                                                }else {
+                                                                                                                                                rtInt = scPartMapper.insertAllDao(insertList);
+                                                                                                                                                }
+                                                                                                                                                //rtInt = scPartMapper.insertAllDao(insertList);
+                                                                                                                                                }
+                                                                                                                                                insertList = new ArrayList<SearchPartinfoDto>();
+                                                                                                                                                    if (rtInt <= 0) { break; }
+                                                                                                                                                    }
+                                                                                                                                                    }
+
+                                                                                                                                                    if (insertList.size() > 0) {
+                                                                                                                                                    if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                                    for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                                    rtInt = scPartMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                                    try {Thread.sleep(100);  }catch (Exception e) {}//2021 08 24 에러 확인용
+                                                                                                                                                    }
+                                                                                                                                                    } else {
+                                                                                                                                                    rtInt = scPartMapper.insertAllDao(insertList);
+                                                                                                                                                    }
+                                                                                                                                                    insertList = null;
+                                                                                                                                                    }
+
+                                                                                                                                                    logger.info("SearchRegister.insertScIPBIpbinfo insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+
+                                                                                                                                                    } catch (Exception ex) {
+                                                                                                                                                    //ex.printStackTrace();
+                                                                                                                                                    logger.error("SearchRegister.insertScIPBIpbinfo Exception : "+regDto.getToKey(),ex);
+                                                                                                                                                    return -1;
+                                                                                                                                                    }
+
+                                                                                                                                                    return rtInt;
+                                                                                                                                                    }
+
+
+                                                                                                                                                    /**
+                                                                                                                                                    * TO목차내용(UUID.xml) 중 검색 내용 중 IPB(Partinfo) 관련 XCont(XML Data) DB 등록 실행
+                                                                                                                                                    * @MethodName	: insertScIPBPartinfo
+                                                                                                                                                    * @AuthorDate		: LIM Y.M. / 2016. 9. 27.
+                                                                                                                                                    * @ModificationHistory	: Park.J.S. 2022 06 27
+                                                                                                                                                    * @param regDto, ipbList, ipbType
+                                                                                                                                                    * <pre>
+	 * IPB KTA 일경우 일력 ATT 수정
+	 * </pre>
+                                                                                                                                                    * @return
+                                                                                                                                                    */
+                                                                                                                                                    public int insertScIPBPartinfo(RegisterDto regDto, NodeList ipbList, int ipbType) {
+                                                                                                                                                    logger.info("SearchRegister.insertScIPBPartinfo 중 검색 내용 중 IPB(Partinfo) 관련 XCont(XML Data) DB 등록 실행");
+
+                                                                                                                                                    int rtInt = 0;		//등록할 검색용 IPB 부대급 데이터가 없을 수도 있기에 0으로 초기화
+
+                                                                                                                                                    if (ipbList == null || ipbList.getLength() == 0 || regDto == null) {
+                                                                                                                                                    logger.info("SearchRegister.insertScIPBPartinfo 중 검색 내용 중 IPB(Partinfo) 관련 XCont(XML Data) DB 등록  취소 됨...............");
+                                                                                                                                                    return rtInt;
+                                                                                                                                                    }
+
+                                                                                                                                                    try {
+                                                                                                                                                    ArrayList<SearchPartinfoDto> insertList = new ArrayList<SearchPartinfoDto>();
+                                                                                                                                                        int insertCnt		= 0;
+
+                                                                                                                                                        String ipbId		= "";
+                                                                                                                                                        String indexNo		= "";
+                                                                                                                                                        String grphNo		= "";
+                                                                                                                                                        String ipbCode		= "";
+                                                                                                                                                        String partNo		= "";
+                                                                                                                                                        String partName		= "";
+                                                                                                                                                        String nsn			= "";
+                                                                                                                                                        String cage			= "";
+                                                                                                                                                        String rdn			= "";
+                                                                                                                                                        String upa			= "";
+                                                                                                                                                        String smr			= "";
+                                                                                                                                                        String stdMngt		= "";
+                                                                                                                                                        String wuc			= "";				//2023.12.07 - 작업단위부호 추가 - jingi.kim
+
+                                                                                                                                                        for (int loop=0; loop<ipbList.getLength(); loop++) {
+                                                                                                                                                        Node ipbNode = ipbList.item(loop);
+                                                                                                                                                        NamedNodeMap ipbAttr = ipbNode.getAttributes();
+
+                                                                                                                                                        if (ipbNode == null || !ipbNode.getNodeName().equals(DTD.IPB_PARTINFO)) {
+                                                                                                                                                        continue;
+                                                                                                                                                        }
+
+                                                                                                                                                        ipbId		= XmlDomParser.getAttributes(ipbAttr, ATTR.ID);
+                                                                                                                                                        indexNo		= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_INDEXNUM);
+                                                                                                                                                        //2022 06 27 Park.J.S. Update
+                                                                                                                                                        if(!"KTA".equalsIgnoreCase(ext.getBIZ_CODE())){
+                                                                                                                                                        grphNo	= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_GRPHNUM);
+                                                                                                                                                        }else {
+                                                                                                                                                        grphNo	= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_GRPHNUM2);
+                                                                                                                                                        }
+                                                                                                                                                        ipbCode		= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_IPBCODE);
+                                                                                                                                                        rdn			= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_RDN);
+                                                                                                                                                        upa			= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_UNITSPER);
+                                                                                                                                                        stdMngt		= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_STD);
+                                                                                                                                                        wuc			= XmlDomParser.getAttributes(ipbAttr, ATTR.IPB_WUC);			//2023.12.07 - 작업단위부호 추가 - jingi.kim
+
+                                                                                                                                                        Node pbaseNode = XmlDomParser.getNodeFromXPathAPI(ipbNode, "./child::partbase");
+                                                                                                                                                        if (pbaseNode != null && pbaseNode.getNodeName().equals(DTD.IPB_PARTBASE)) {
+                                                                                                                                                        NamedNodeMap pbaseAttr = pbaseNode.getAttributes();
+                                                                                                                                                        partNo		= XmlDomParser.getAttributes(pbaseAttr, ATTR.IPB_PARTNUM);
+                                                                                                                                                        partName	= XmlDomParser.getAttributes(pbaseAttr, ATTR.NAME);
+                                                                                                                                                        nsn			= XmlDomParser.getAttributes(pbaseAttr, ATTR.IPB_NSN);
+                                                                                                                                                        cage			= XmlDomParser.getAttributes(pbaseAttr, ATTR.IPB_CAGE);
+                                                                                                                                                        smr			= XmlDomParser.getAttributes(pbaseAttr, ATTR.IPB_SMR);
+                                                                                                                                                        if (partName.equals("")) {
+                                                                                                                                                        partName = XmlDomParser.getTxt(pbaseNode);
+                                                                                                                                                        }
+                                                                                                                                                        }
+
+                                                                                                                                                        if (ipbId.equals("")) {
+                                                                                                                                                        logger.info("SearchRegister.insertScIPBPartinfo Contents is NULL ipbId");
+                                                                                                                                                        continue;
+                                                                                                                                                        }
+                                                                                                                                                        //부대IPB는 품목번호(indexnum) 0이면 검색 테이블에 미등록, 야전IPB는 품목번호 0이어도 등록
+                                                                                                                                                        if (ipbType == IConstants.IPB_TYPE_UNIT && indexNo.equals("")) {
+                                                                                                                                                        logger.info("SearchRegister.insertScIPBPartinfo IPB Unit & index_no is NULL ipbType");
+                                                                                                                                                        continue;
+                                                                                                                                                        }
+
+                                                                                                                                                        //
+                                                                                                                                                        String parentTocoId = "";
+                                                                                                                                                        if (ipbType == IConstants.IPB_TYPE_FIELD && ipbNode.getParentNode() != null) {
+                                                                                                                                                        NamedNodeMap paAttr = ipbNode.getParentNode().getAttributes();
+                                                                                                                                                        parentTocoId = XmlDomParser.getAttributes(paAttr, ATTR.ID);
+                                                                                                                                                        }
+                                                                                                                                                        //2021 08 13 parkjs 부대급도 목차_id로 설정 안할경우 조회가 안됨
+                                                                                                                                                        if (ipbType == IConstants.IPB_TYPE_UNIT && ipbNode.getParentNode() != null) {
+                                                                                                                                                        NamedNodeMap paAttr = ipbNode.getParentNode().getAttributes();
+                                                                                                                                                        parentTocoId = XmlDomParser.getAttributes(paAttr, ATTR.ID);
+                                                                                                                                                        }
+
+
+                                                                                                                                                        SearchPartinfoDto scDto = new SearchPartinfoDto();
+                                                                                                                                                        scDto.setToKey(regDto.getToKey());
+                                                                                                                                                        scDto.setTocoId(ipbId);		//IPB TO는 ipb_id가 목차_id가 됨
+
+                                                                                                                                                        //20200319 edit LYM 야전IPB일 경우는, 목차_id로 지정
+                                                                                                                                                        logger.info("ipbType : "+ipbType+", IConstants.IPB_TYPE_FIELD : "+IConstants.IPB_TYPE_FIELD);
+                                                                                                                                                        if (ipbType == IConstants.IPB_TYPE_FIELD) {
+                                                                                                                                                        scDto.setTocoId(parentTocoId);
+                                                                                                                                                        }
+                                                                                                                                                        //2021 08 13 parkjs 부대급도 목차_id로 설정 안할경우 조회가 안됨
+                                                                                                                                                        if (ipbType == IConstants.IPB_TYPE_UNIT) {
+                                                                                                                                                        logger.info("2021 08 13 parkjs 부대급도 목차_id로 설정  안할경우 조회가 안됨 : "+parentTocoId);
+                                                                                                                                                        scDto.setTocoId(parentTocoId);
+                                                                                                                                                        }
+                                                                                                                                                        scDto.setIndexNo(indexNo);
+                                                                                                                                                        scDto.setGrphNo(grphNo);
+                                                                                                                                                        scDto.setIpbCode(ipbCode);
+                                                                                                                                                        scDto.setPartNo(partNo);
+                                                                                                                                                        scDto.setPartName(partName);
+                                                                                                                                                        scDto.setNsn(nsn);
+                                                                                                                                                        scDto.setCage(cage);
+                                                                                                                                                        scDto.setRdn(rdn);
+                                                                                                                                                        scDto.setUpa(upa);
+                                                                                                                                                        scDto.setSmr(smr);
+                                                                                                                                                        scDto.setStdMngt(stdMngt);
+                                                                                                                                                        scDto.setCreateUserId(regDto.getUserId());
+                                                                                                                                                        //2022 03 18 건바이건 등록하도록 수정
+                                                                                                                                                        //System.out.println("insertList1 : "+scDto.getTocoId()+", "+scDto.getPartNo()+", "+scDto.getPartName()+", "+scDto.getNsn()+", "+scDto.getRdn());
+                                                                                                                                                        //rtInt = scPartMapper.insertAllDaoMDB(scDto);
+                                                                                                                                                        scDto.setWuc(wuc); 			//2023.12.07 - 작업단위부호 추가 - jingi.kim
+                                                                                                                                                        insertList.add(scDto);
+
+                                                                                                                                                        insertCnt++;
+
+                                                                                                                                                        if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                                                                                                                        if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                                        for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                                        rtInt = scPartMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                                        }
+                                                                                                                                                        } else {
+                                                                                                                                                        //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                                                                                                        if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                                                                                                        for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                                                                                                        ArrayList<SearchPartinfoDto> tempInsertList = new ArrayList<SearchPartinfoDto>();
+                                                                                                                                                            if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                                                                                                            tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                                                                                                            }else{
+                                                                                                                                                            tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                                                                                                            }
+                                                                                                                                                            rtInt = scPartMapper.insertAllDao(tempInsertList);
+                                                                                                                                                            }
+                                                                                                                                                            }else {
+                                                                                                                                                            rtInt = scPartMapper.insertAllDao(insertList);
+                                                                                                                                                            }
+                                                                                                                                                            //rtInt = scPartMapper.insertAllDao(insertList);
+                                                                                                                                                            }
+                                                                                                                                                            insertList = new ArrayList<SearchPartinfoDto>();
+                                                                                                                                                                if (rtInt <= 0) { break; }
+                                                                                                                                                                }
+
+                                                                                                                                                                }
+
+                                                                                                                                                                if (insertList.size() > 0) {
+                                                                                                                                                                if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                                                for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                                                rtInt = scPartMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                                                }
+                                                                                                                                                                } else {
+                                                                                                                                                                rtInt = scPartMapper.insertAllDao(insertList);
+                                                                                                                                                                }
+                                                                                                                                                                insertList = null;
+                                                                                                                                                                }
+
+                                                                                                                                                                logger.info("SearchRegister.insertScIPBPartinfo insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+                                                                                                                                                                } catch (Exception ex) {
+                                                                                                                                                                ex.printStackTrace();
+                                                                                                                                                                logger.error("SearchRegister.insertScIPBPartinfo Exception : "+regDto.getToKey(),ex);
+                                                                                                                                                                return -1;
+                                                                                                                                                                }
+
+                                                                                                                                                                return rtInt;
+                                                                                                                                                                }
+
+
+                                                                                                                                                                /**
+                                                                                                                                                                * TO목차내용(UUID.xml) 중 검색 내용 중 WUC 관련 XCont(XML Data) DB 등록 실행
+                                                                                                                                                                * @MethodName	: insertScWuc
+                                                                                                                                                                * @AuthorDate		: LIM Y.M. / 2016. 9. 23.
+                                                                                                                                                                * @ModificationHistory	:
+                                                                                                                                                                * @param regDto, contElem
+                                                                                                                                                                * @return
+                                                                                                                                                                * 동시 여러 건수 등록
+                                                                                                                                                                */
+                                                                                                                                                                public int insertScWuc(RegisterDto regDto, Element contElem) {
+
+                                                                                                                                                                int rtInt = 0;
+
+                                                                                                                                                                if (contElem == null || regDto == null) {
+                                                                                                                                                                return rtInt;
+                                                                                                                                                                }
+
+                                                                                                                                                                try {
+                                                                                                                                                                ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                                                                                                                                                    int insertCnt = 0;
+
+                                                                                                                                                                    String descTitle = "";
+                                                                                                                                                                    NodeList descList = XmlDomParser.getNodeListFromXPathAPI(contElem, XALAN.REG_DESC + "[@" + ATTR.TYPE + "='title']");
+                                                                                                                                                                    if ( descList.getLength() > 0 ) {
+                                                                                                                                                                    Node descNode = descList.item(0);
+                                                                                                                                                                    descTitle = XmlDomParser.getAttributes(descNode.getAttributes(), ATTR.NAME);
+                                                                                                                                                                    }
+
+                                                                                                                                                                    NodeList rowhList = XmlDomParser.getNodeListFromXPathAPI(contElem, XALAN.REG_TABLE_ROWH);
+                                                                                                                                                                    for (int loop=0; loop<rowhList.getLength(); loop++) {
+                                                                                                                                                                    Node rowhNode = rowhList.item(loop);
+                                                                                                                                                                    if (rowhNode == null || !rowhNode.getNodeName().equals(DTD.TB_ROWH)) {
+                                                                                                                                                                    continue;
+                                                                                                                                                                    }
+
+                                                                                                                                                                    String wucCode = "";
+                                                                                                                                                                    String wucName = "";
+                                                                                                                                                                    int maxStrLength = IConstants.REG_MAX_STR_LEN;
+
+                                                                                                                                                                    NodeList entryList = rowhNode.getChildNodes();
+                                                                                                                                                                    for (int sub=0; sub<entryList.getLength(); sub++) {
+                                                                                                                                                                    Node entryNode = entryList.item(sub);
+
+                                                                                                                                                                    if (entryNode == null || !entryNode.getNodeName().equals(DTD.TB_ENTRY)) {
+                                                                                                                                                                    continue;
+                                                                                                                                                                    }
+
+                                                                                                                                                                    String colStr = XmlDomParser.getAttributes(entryNode.getAttributes(), ATTR.TB_COLUMN);
+                                                                                                                                                                    if (colStr.equals("0")) {
+                                                                                                                                                                    wucCode = CodeConverter.deleteAllCode(XmlDomParser.getTxt(entryNode));
+                                                                                                                                                                    } else if (colStr.equals("1")) {
+                                                                                                                                                                    wucName = CodeConverter.deleteAllCode(XmlDomParser.getTxt(entryNode));
+                                                                                                                                                                    if (wucName.length() < maxStrLength) {
+                                                                                                                                                                    maxStrLength = wucName.length();
+                                                                                                                                                                    }
+                                                                                                                                                                    wucName = wucName.substring(0, maxStrLength);
+
+                                                                                                                                                                    if (wucCode.equals("") && wucName.equals("")) {
+                                                                                                                                                                    logger.info("SearchRegister.insertScWuc Contents is NULL Exception");
+                                                                                                                                                                    continue;
+                                                                                                                                                                    }
+
+                                                                                                                                                                    // 2023.11.30 - 작업단위부호 코드 검사 - jingi.kim
+                                                                                                                                                                    // 42JA0/32JA1 처럼 되어 있는 값도 있어서 검사하면 안됨
+                                                                                                                                                                    //if ( ! contRegister.isWucCode(wucCode) ) continue;
+
+                                                                                                                                                                    SearchDto scDto = new SearchDto();
+                                                                                                                                                                    scDto.setToKey(regDto.getToKey());
+                                                                                                                                                                    scDto.setTocoId(regDto.getTocoId());
+                                                                                                                                                                    scDto.setWucCode(wucCode);
+                                                                                                                                                                    scDto.setWucName(wucName);
+                                                                                                                                                                    scDto.setCont(descTitle);
+                                                                                                                                                                    scDto.setCreateUserId(regDto.getUserId());
+                                                                                                                                                                    insertList.add(scDto);
+                                                                                                                                                                    break;
+                                                                                                                                                                    }
+
+                                                                                                                                                                    if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                                                                                                                                    if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                                                    for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                                                    rtInt = scWucMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                                                    }
+                                                                                                                                                                    } else {
+                                                                                                                                                                    //2022 04 07 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                                                                                                                    if(insertList.size() >= IConstants.REG_MAXIMUM){
+                                                                                                                                                                    for(int j=0; j<insertList.size(); j = j+IConstants.REG_MAXIMUM) {
+                                                                                                                                                                    ArrayList<SearchDto> tempInsertList = new ArrayList<SearchDto>();
+                                                                                                                                                                        if(j+IConstants.REG_MAXIMUM < insertList.size()) {
+                                                                                                                                                                        tempInsertList.addAll(insertList.subList(j, j+IConstants.REG_MAXIMUM));
+                                                                                                                                                                        }else{
+                                                                                                                                                                        tempInsertList.addAll(insertList.subList(j, insertList.size()));
+                                                                                                                                                                        }
+                                                                                                                                                                        rtInt = scWucMapper.insertAllDao(tempInsertList);
+                                                                                                                                                                        }
+                                                                                                                                                                        }else {
+                                                                                                                                                                        rtInt = scWucMapper.insertAllDao(insertList);
+                                                                                                                                                                        }
+                                                                                                                                                                        //rtInt = scWucMapper.insertAllDao(insertList);
+                                                                                                                                                                        }
+                                                                                                                                                                        insertCnt += insertList.size();
+                                                                                                                                                                        insertList = new ArrayList<SearchDto>();
+                                                                                                                                                                            if (rtInt <= 0) { break; }
+                                                                                                                                                                            }
+                                                                                                                                                                            }
+                                                                                                                                                                            }
+
+                                                                                                                                                                            if (insertList.size() > 0) {
+                                                                                                                                                                            if(regDto.getDbType().equalsIgnoreCase("mdb")) {
+                                                                                                                                                                            for(int j=0; j<insertList.size(); j++) {
+                                                                                                                                                                            rtInt = scWucMapper.insertAllDaoMDB(insertList.get(j));
+                                                                                                                                                                            }
+                                                                                                                                                                            } else {
+                                                                                                                                                                            rtInt = scWucMapper.insertAllDao(insertList);
+                                                                                                                                                                            }
+                                                                                                                                                                            insertCnt += insertList.size();
+                                                                                                                                                                            insertList = null;
+                                                                                                                                                                            }
+
+                                                                                                                                                                            logger.info("SearchRegister.insertSearchWuc insertList.size():"+insertCnt+", rtInt:"+rtInt);
+
+                                                                                                                                                                            } catch (Exception ex) {
+                                                                                                                                                                            ex.printStackTrace();
+                                                                                                                                                                            logger.error("SearchRegister.insertSearchWuc Exception : "+regDto.getToKey(),ex);
+                                                                                                                                                                            return -1;
+                                                                                                                                                                            }
+
+                                                                                                                                                                            return rtInt;
+                                                                                                                                                                            }
+
+                                                                                                                                                                            /**
+                                                                                                                                                                            * 2023.11.29 - 작업단위부호 WUC 추가 - jingi.kim
+                                                                                                                                                                            * @param insertList
+                                                                                                                                                                            * @return
+                                                                                                                                                                            */
+                                                                                                                                                                            public int insertScWuc( ArrayList<SearchDto> wucList ) {
+                                                                                                                                                                                int rtInt = 1;
+
+                                                                                                                                                                                ArrayList<SearchDto> insertList = new ArrayList<SearchDto>();
+                                                                                                                                                                                    try {
+                                                                                                                                                                                    for ( int i=0 ; i<wucList.size(); i++ ) {
+                                                                                                                                                                                    insertList.add(wucList.get(i));
+
+                                                                                                                                                                                    if (insertList.size() >= IConstants.REG_MAX_LIST_LARGE) {
+                                                                                                                                                                                    // 속도 이슈로 인해 최대치 넘어갈경우 분할 처리하도록 수정
+                                                                                                                                                                                    rtInt = scWucMapper.insertAllDao(insertList);
+
+                                                                                                                                                                                    insertList = new ArrayList<SearchDto>();
+                                                                                                                                                                                        if (rtInt <= 0) { break; }
+                                                                                                                                                                                        }
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        if (insertList.size() > 0 ) {
+                                                                                                                                                                                        rtInt = scWucMapper.insertAllDao(insertList);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        } catch( Exception e ) {
+                                                                                                                                                                                        e.printStackTrace();
+                                                                                                                                                                                        rtInt = -1;
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        return rtInt;
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        /**
+                                                                                                                                                                                        * TO 중 검색 내용 DB 삭제
+                                                                                                                                                                                        * TOCO 검색내용 XCont(XML Data) Delete (tm_sc_cont delete)
+                                                                                                                                                                                        * - cont, fi, ipb, partinfo, wuc
+                                                                                                                                                                                        * @MethodName	: deleteSc
+                                                                                                                                                                                        * @AuthorDate		: LIM Y.M. / 2016. 9. 13.
+                                                                                                                                                                                        * @ModificationHistory	:
+                                                                                                                                                                                        * @param regDto
+                                                                                                                                                                                        * @return
+                                                                                                                                                                                        */
+                                                                                                                                                                                        public int deleteSearch(RegisterDto regDto) {
+
+                                                                                                                                                                                        int delInt	= 0;		//삭제건수, 0이어도 오류 아님
+
+                                                                                                                                                                                        try {
+                                                                                                                                                                                        //TOCO 검색내용 XCont(XML Data) Delete (tm_sc_cont delete)
+                                                                                                                                                                                        SearchDto scDto = new SearchDto();
+                                                                                                                                                                                        scDto.setToKey(regDto.getToKey());
+                                                                                                                                                                                        SearchPartinfoDto scPartDto = new SearchPartinfoDto();
+                                                                                                                                                                                        scPartDto.setToKey(regDto.getToKey());
+
+                                                                                                                                                                                        {
+                                                                                                                                                                                        delInt = scContMapper.deleteDao(scDto);
+                                                                                                                                                                                        logger.info("SearchRegister.deleteSearch ===> 1-1. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scFiMapper.deleteDao(scDto);
+                                                                                                                                                                                        logger.info("SearchRegister.deleteSearch ===> 1-2. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scIpbMapper.deleteDao(scPartDto);
+                                                                                                                                                                                        logger.info("SearchRegister.deleteSearch ===> 1-3. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scPartMapper.deleteDao(scPartDto);
+                                                                                                                                                                                        logger.info("SearchRegister.deleteSearch ===> 1-4. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scWucMapper.deleteDao(scDto);
+                                                                                                                                                                                        logger.info("SearchRegister.deleteSearch ===> 1-5. delInt:"+delInt);
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        } catch (Exception ex) {
+                                                                                                                                                                                        ex.printStackTrace();
+                                                                                                                                                                                        logger.error("SearchRegister.deleteSearch Exception : "+regDto.getToKey(),ex);
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        return delInt;
+                                                                                                                                                                                        }
+
+
+                                                                                                                                                                                        /**
+                                                                                                                                                                                        * 전체 TO 중 검색 내용 DB 삭제
+                                                                                                                                                                                        * @MethodName	: deleteAllSearch
+                                                                                                                                                                                        * @AuthorDate		: LIM Y.M. / 2016. 9. 24.
+                                                                                                                                                                                        * @ModificationHistory	:
+                                                                                                                                                                                        * @param regDto
+                                                                                                                                                                                        * @return
+                                                                                                                                                                                        */
+                                                                                                                                                                                        public int deleteAllSearch(RegisterDto regDto) {
+
+                                                                                                                                                                                        int delInt	= 0;		//삭제건수, 0이어도 오류 아님
+
+                                                                                                                                                                                        try {
+                                                                                                                                                                                        //TOCO 검색내용 XCont(XML Data) Delete (tm_*_xcont delete)
+                                                                                                                                                                                        {
+                                                                                                                                                                                        delInt = scContMapper.deleteAllDao();
+                                                                                                                                                                                        logger.info("SearchRegister.deleteAllSearch ===> 1-1. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scFiMapper.deleteAllDao();
+                                                                                                                                                                                        logger.info("SearchRegister.deleteAllSearch ===> 1-2. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scIpbMapper.deleteAllDao();
+                                                                                                                                                                                        logger.info("SearchRegister.deleteAllSearch ===> 1-3. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scPartMapper.deleteAllDao();
+                                                                                                                                                                                        logger.info("SearchRegister.deleteAllSearch ===> 1-4. delInt:"+delInt);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        if (delInt >= 0) {
+                                                                                                                                                                                        delInt = scWucMapper.deleteAllDao();
+                                                                                                                                                                                        logger.info("SearchRegister.deleteAllSearch ===> 1-5. delInt:"+delInt);
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        } catch (Exception ex) {
+                                                                                                                                                                                        ex.printStackTrace();
+                                                                                                                                                                                        logger.error("SearchRegister.deleteAllSearch Exception : "+regDto.getToKey(),ex);
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        return delInt;
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        /**
+                                                                                                                                                                                        * 2021 08 12 노드로그깅용으로 추가
+                                                                                                                                                                                        * @param node
+                                                                                                                                                                                        * @return
+                                                                                                                                                                                        */
+                                                                                                                                                                                        public String getNodeString(Node node) {
+                                                                                                                                                                                        try {
+                                                                                                                                                                                        StringWriter writer = new StringWriter();
+                                                                                                                                                                                        Transformer transformer = TransformerFactory.newInstance().newTransformer();
+                                                                                                                                                                                        transformer.transform(new DOMSource(node), new StreamResult(writer));
+                                                                                                                                                                                        String output = writer.toString();
+                                                                                                                                                                                        return output.substring(output.indexOf("?>") + 2);//remove <?xml version="1.0" encoding="UTF-8"?>
+                                                                                                                                                                                        } catch (TransformerException e) {
+                                                                                                                                                                                        e.printStackTrace();
+                                                                                                                                                                                        }
+                                                                                                                                                                                        return node.getTextContent();
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        /**
+                                                                                                                                                                                        * 2022 06 28
+                                                                                                                                                                                        * 참고 지정 번호 색인 값 업데이트
+                                                                                                                                                                                        * @param dto
+                                                                                                                                                                                        */
+                                                                                                                                                                                        public void updateIPBSearchForKTA(SearchPartinfoDto dto) {
+                                                                                                                                                                                        try {
+                                                                                                                                                                                        scContMapper.updateIPBSearchForKTA(dto);
+                                                                                                                                                                                        }catch (Exception e) {
+                                                                                                                                                                                        logger.error(e.getMessage(),e);
+                                                                                                                                                                                        }
+                                                                                                                                                                                        }
+
+                                                                                                                                                                                        }
